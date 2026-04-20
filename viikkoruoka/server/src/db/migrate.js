@@ -1,30 +1,57 @@
 require('dotenv').config();
 const { pool } = require('./index');
 
+/*
+ * Schema v2 — goods-centric.
+ *
+ *   pantry_categories  : display groups on the pantry screen
+ *   goods              : canonical "thing" — referenced by pantry stock AND recipe ingredients
+ *                        is_common=true means it shows on the pantry screen and has a stock status
+ *                        is_common=false is a one-off recipe ingredient
+ *   recipes            : as before
+ *   recipe_ingredients : links a recipe to a good (+ recipe-specific qty)
+ *
+ * Shopping list (computed) = common goods with status='need'
+ *                          ∪ recipe ingredients whose good isn't currently 'have'.
+ */
+
 const statements = [
-  // Enable UUID generation (needed for gen_random_uuid())
   `CREATE EXTENSION IF NOT EXISTS pgcrypto`,
 
-  `CREATE TABLE IF NOT EXISTS pantry_categories (
+  // Wipe old schema (we chose "wipe and reseed" during design).
+  `DROP TABLE IF EXISTS recipe_ingredients CASCADE`,
+  `DROP TABLE IF EXISTS recipes            CASCADE`,
+  `DROP TABLE IF EXISTS pantry_items       CASCADE`,
+  `DROP TABLE IF EXISTS goods              CASCADE`,
+  `DROP TABLE IF EXISTS pantry_categories  CASCADE`,
+
+  `CREATE TABLE pantry_categories (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name       TEXT NOT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
 
-  `CREATE TABLE IF NOT EXISTS pantry_items (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    category_id UUID NOT NULL REFERENCES pantry_categories(id) ON DELETE CASCADE,
-    name        TEXT NOT NULL,
-    qty         TEXT NOT NULL DEFAULT '',
-    status      TEXT NOT NULL DEFAULT 'unchecked'
-                  CHECK (status IN ('have','need','unchecked')),
-    sort_order  INTEGER NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  `CREATE TABLE goods (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name         TEXT NOT NULL,
+    category_id  UUID REFERENCES pantry_categories(id) ON DELETE SET NULL,
+    qty          TEXT NOT NULL DEFAULT '',
+    is_common    BOOLEAN NOT NULL DEFAULT true,
+    status       TEXT NOT NULL DEFAULT 'unchecked'
+                   CHECK (status IN ('have','need','unchecked')),
+    notes        TEXT NOT NULL DEFAULT '',
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
 
-  `CREATE TABLE IF NOT EXISTS recipes (
+  // Unique canonical name (case-insensitive) — prevents "Milk" and "milk" drift.
+  `CREATE UNIQUE INDEX goods_name_ci ON goods (LOWER(TRIM(name)))`,
+  `CREATE INDEX idx_goods_category ON goods(category_id)`,
+  `CREATE INDEX idx_goods_is_common ON goods(is_common)`,
+
+  `CREATE TABLE recipes (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     emoji      TEXT NOT NULL DEFAULT '🍽️',
     name       TEXT NOT NULL,
@@ -36,25 +63,29 @@ const statements = [
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
 
-  `CREATE TABLE IF NOT EXISTS recipe_ingredients (
+  `CREATE TABLE recipe_ingredients (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     recipe_id  UUID NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
-    name       TEXT NOT NULL,
+    good_id    UUID NOT NULL REFERENCES goods(id)   ON DELETE RESTRICT,
     qty        TEXT NOT NULL DEFAULT '',
-    sort_order INTEGER NOT NULL DEFAULT 0
+    status     TEXT NOT NULL DEFAULT 'unchecked'
+                 CHECK (status IN ('have','need','unchecked')),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (recipe_id, good_id)
   )`,
 
-  `CREATE INDEX IF NOT EXISTS idx_pantry_items_category ON pantry_items(category_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id)`,
+  `CREATE INDEX idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id)`,
+  `CREATE INDEX idx_recipe_ingredients_good   ON recipe_ingredients(good_id)`,
+  `CREATE INDEX idx_recipe_ingredients_need   ON recipe_ingredients(status) WHERE status = 'need'`,
 
   `CREATE OR REPLACE FUNCTION update_updated_at()
    RETURNS TRIGGER AS $$
    BEGIN NEW.updated_at = now(); RETURN NEW; END;
    $$ LANGUAGE plpgsql`,
 
-  `DROP TRIGGER IF EXISTS pantry_items_updated_at ON pantry_items`,
-  `CREATE TRIGGER pantry_items_updated_at
-     BEFORE UPDATE ON pantry_items
+  `DROP TRIGGER IF EXISTS goods_updated_at ON goods`,
+  `CREATE TRIGGER goods_updated_at
+     BEFORE UPDATE ON goods
      FOR EACH ROW EXECUTE PROCEDURE update_updated_at()`,
 
   `DROP TRIGGER IF EXISTS recipes_updated_at ON recipes`,
@@ -70,7 +101,7 @@ async function migrate() {
     for (const sql of statements) {
       await client.query(sql);
     }
-    console.log('✅ All tables created / verified');
+    console.log('✅ Schema v2 installed (goods, pantry_categories, recipes, recipe_ingredients)');
   } catch (err) {
     console.error('❌ Migration failed:', err.message);
     process.exit(1);

@@ -4,9 +4,26 @@ require('dotenv').config();
 const connectionString = (process.env.DATABASE_URL || '')
   .replace(/^postgres:\/\//, 'postgresql://');
 
+// Enable SSL only when it's actually needed (hosted DBs like Render, Neon,
+// Supabase) — local Postgres rejects SSL by default.
+function shouldUseSsl(url) {
+  if (process.env.PGSSLMODE === 'disable') return false;
+  if (process.env.DATABASE_SSL === 'true') return true;
+  if (process.env.DATABASE_SSL === 'false') return false;
+  if (!url) return false;
+  if (/sslmode=require|sslmode=verify/i.test(url)) return true;
+  // Any host that isn't localhost/127.0.0.1 is assumed to want SSL.
+  try {
+    const host = new URL(url).hostname;
+    return host && host !== 'localhost' && host !== '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
 const pool = new Pool({
   connectionString,
-  ssl: { rejectUnauthorized: false },
+  ssl: shouldUseSsl(connectionString) ? { rejectUnauthorized: false } : false,
 });
 
 pool.on('error', (err) => {

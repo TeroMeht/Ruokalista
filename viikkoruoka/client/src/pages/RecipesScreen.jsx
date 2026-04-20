@@ -2,32 +2,75 @@ import React, { useState } from 'react';
 import Modal from '../components/Modal.jsx';
 import { api } from '../lib/api.js';
 
+/*
+ * Recipes tab.
+ *
+ * Each recipe lists its ingredients. Every ingredient has its own status
+ * (have / need / unchecked) that the user toggles right here. Marking an
+ * ingredient as "need" puts it on the shopping list — this is the ONLY way
+ * recipe-driven items reach the shop, independent of the pantry tab.
+ *
+ * The pill in the header summarises the ingredient statuses for that recipe:
+ *   all 'have'                → "Ready to cook"
+ *   any 'need'                → "N missing"
+ *   only 'have'/'unchecked'   → "N unchecked"
+ */
+
 const EMOJIS = ['🍝','🍲','🥗','🍱','🥩','🐟','🍜','🍛','🥘','🫕','🥞','🥙','🍔','🌮','🫔','🥚','🍳','🥦'];
 
-function RecipeStatusBadge({ recipe, pantryMap }) {
-  const missing = recipe.ingredients.filter(ing => pantryMap[ing.name.toLowerCase()] !== 'have').length;
-  if (missing === 0) return <span className="badge badge-green">Ready to cook</span>;
-  if (missing <= 2)  return <span className="badge badge-amber">{missing} missing</span>;
-  return <span className="badge badge-red">{missing} missing</span>;
+// Same 3-state cycle as the pantry tab.
+const STATUS_CYCLE = { have: 'need', need: 'unchecked', unchecked: 'have' };
+
+function StatusDot({ status }) {
+  const styles = {
+    have:      { bg: 'var(--forest)',      border: 'var(--forest)',     color: 'white', icon: '✓' },
+    need:      { bg: 'var(--rust-light)',  border: 'var(--rust)',       color: 'var(--rust)', icon: '✕' },
+    unchecked: { bg: 'white',              border: 'var(--cream-dark)', color: 'transparent', icon: '' },
+  };
+  const s = styles[status] || styles.unchecked;
+  return (
+    <span style={{
+      width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: 11, fontWeight: 700,
+      background: s.bg, border: `1.5px solid ${s.border}`, color: s.color,
+      transition: 'all 0.15s',
+    }}>{s.icon}</span>
+  );
 }
 
-function IngredientRow({ ing, pantryMap }) {
-  const have = pantryMap[ing.name.toLowerCase()] === 'have';
+function RecipeStatusBadge({ ingredients }) {
+  const total     = ingredients.length;
+  const have      = ingredients.filter(i => i.status === 'have').length;
+  const need      = ingredients.filter(i => i.status === 'need').length;
+  const unchecked = total - have - need;
+
+  if (total === 0)   return <span className="badge badge-gray">No ingredients</span>;
+  if (need > 0)      return <span className="badge badge-red">{need} missing</span>;
+  if (unchecked > 0) return <span className="badge badge-amber">{unchecked} to check</span>;
+  return <span className="badge badge-green">Ready to cook</span>;
+}
+
+function IngredientRow({ ing, onCycle, busy }) {
+  const status = ing.status || 'unchecked';
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8,
-      padding: '6px 0', borderBottom: '1px solid var(--cream-dark)',
-      fontSize: 13,
-    }}>
+    <div
+      onClick={busy ? undefined : onCycle}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '8px 0', borderBottom: '1px solid var(--cream-dark)',
+        fontSize: 13, cursor: busy ? 'default' : 'pointer',
+        opacity: busy ? 0.6 : 1,
+      }}
+    >
+      <StatusDot status={status} />
       <span style={{
-        width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-        background: have ? 'var(--forest-light)' : 'var(--rust)',
-      }} />
-      <span style={{ flex: 1 }}>{ing.name}</span>
-      <span style={{ color: 'var(--ink-faint)', fontSize: 12 }}>{ing.qty}</span>
-      <span style={{ fontSize: 11, fontWeight: 500, color: have ? 'var(--forest-mid)' : 'var(--rust)' }}>
-        {have ? 'Have' : 'Need'}
+        flex: 1,
+        color: status === 'need' ? 'var(--rust)' : 'var(--ink)',
+      }}>
+        {ing.name}
       </span>
+      <span style={{ color: 'var(--ink-faint)', fontSize: 12 }}>{ing.qty}</span>
     </div>
   );
 }
@@ -65,16 +108,15 @@ function IngBuilder({ ingredients, setIngredients }) {
 
 function RecipeModal({ open, onClose, onSave, initialRecipe }) {
   const editing = !!initialRecipe;
-  const [emoji, setEmoji]         = useState(initialRecipe?.emoji || '🍝');
-  const [name, setName]           = useState(initialRecipe?.name || '');
-  const [cookTime, setCookTime]   = useState(initialRecipe?.cook_time || 30);
-  const [servings, setServings]   = useState(initialRecipe?.servings || 4);
-  const [notes, setNotes]         = useState(initialRecipe?.notes || '');
+  const [emoji, setEmoji]       = useState(initialRecipe?.emoji || '🍝');
+  const [name, setName]         = useState(initialRecipe?.name || '');
+  const [cookTime, setCookTime] = useState(initialRecipe?.cook_time || 30);
+  const [servings, setServings] = useState(initialRecipe?.servings || 4);
+  const [notes, setNotes]       = useState(initialRecipe?.notes || '');
   const [ingredients, setIngredients] = useState(
     initialRecipe?.ingredients?.map(i => ({ name: i.name, qty: i.qty })) || [{ name: '', qty: '' }, { name: '', qty: '' }]
   );
 
-  // Reset when modal opens with new initial value
   React.useEffect(() => {
     if (open) {
       setEmoji(initialRecipe?.emoji || '🍝');
@@ -145,15 +187,10 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
   const [expanded, setExpanded]     = useState({});
   const [modalOpen, setModalOpen]   = useState(false);
   const [editRecipe, setEditRecipe] = useState(null);
+  const [pendingIng, setPendingIng] = useState({});  // { [ingredient_id]: true } while saving
 
-  // Build pantry map
-  const pantryMap = {};
-  categories.forEach(cat => cat.items.forEach(item => {
-    pantryMap[item.name.toLowerCase()] = item.status;
-  }));
-
-  function openAdd()       { setEditRecipe(null); setModalOpen(true); }
-  function openEdit(r)     { setEditRecipe(r);    setModalOpen(true); }
+  function openAdd()   { setEditRecipe(null); setModalOpen(true); }
+  function openEdit(r) { setEditRecipe(r);    setModalOpen(true); }
 
   async function handleSave(data) {
     try {
@@ -179,6 +216,35 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
     } catch (e) { toast('Error: ' + e.message); }
   }
 
+  async function cycleIngredient(recipe, ing) {
+    const nextStatus = STATUS_CYCLE[ing.status || 'unchecked'];
+    // Optimistic update
+    setRecipes(rs => rs.map(r => r.id !== recipe.id ? r : {
+      ...r,
+      ingredients: r.ingredients.map(i => i.id === ing.id ? { ...i, status: nextStatus } : i),
+    }));
+    setPendingIng(p => ({ ...p, [ing.id]: true }));
+    try {
+      const saved = await api.patchIngredient(recipe.id, ing.id, { status: nextStatus });
+      setRecipes(rs => rs.map(r => r.id !== recipe.id ? r : {
+        ...r,
+        ingredients: r.ingredients.map(i => i.id === ing.id ? { ...i, ...saved } : i),
+      }));
+    } catch (e) {
+      // Roll back
+      setRecipes(rs => rs.map(r => r.id !== recipe.id ? r : {
+        ...r,
+        ingredients: r.ingredients.map(i => i.id === ing.id ? { ...i, status: ing.status } : i),
+      }));
+      toast('Error: ' + e.message);
+    } finally {
+      setPendingIng(p => {
+        const { [ing.id]: _, ...rest } = p;
+        return rest;
+      });
+    }
+  }
+
   return (
     <div className="scroll-area">
       {recipes.length === 0 ? (
@@ -190,8 +256,6 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
       ) : (
         recipes.map(recipe => {
           const isOpen = expanded[recipe.id];
-          const missing = recipe.ingredients.filter(ing => pantryMap[ing.name.toLowerCase()] !== 'have').length;
-
           return (
             <div key={recipe.id} style={{
               background: 'white', borderRadius: 'var(--r)',
@@ -221,7 +285,7 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
                   </div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
-                  <RecipeStatusBadge recipe={recipe} pantryMap={pantryMap} />
+                  <RecipeStatusBadge ingredients={recipe.ingredients} />
                   <span style={{
                     fontSize: 14, color: 'var(--ink-faint)',
                     display: 'inline-block',
@@ -234,12 +298,24 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
               {/* Expanded body */}
               {isOpen && (
                 <div style={{ borderTop: '1px solid var(--cream-dark)' }}>
-                  <div style={{ padding: '10px 14px' }}>
+                  <div style={{ padding: '4px 14px 10px' }}>
+                    <div style={{
+                      fontSize: 11, color: 'var(--ink-faint)',
+                      letterSpacing: '0.06em', textTransform: 'uppercase',
+                      padding: '8px 0 4px',
+                    }}>
+                      Tap each to cycle: have → need → unchecked
+                    </div>
                     {recipe.ingredients.length === 0 ? (
                       <p style={{ fontSize: 13, color: 'var(--ink-faint)', padding: '4px 0' }}>No ingredients listed</p>
                     ) : (
-                      recipe.ingredients.map((ing, i) => (
-                        <IngredientRow key={i} ing={ing} pantryMap={pantryMap} />
+                      recipe.ingredients.map((ing) => (
+                        <IngredientRow
+                          key={ing.id}
+                          ing={ing}
+                          busy={!!pendingIng[ing.id]}
+                          onCycle={() => cycleIngredient(recipe, ing)}
+                        />
                       ))
                     )}
                   </div>

@@ -1,10 +1,20 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../lib/api.js';
 
+/*
+ * Unified shopping list.
+ *
+ * One flat, deduped list of things to buy. The shopping API returns items
+ * with a `sources` array explaining *why* each item is here (pantry restock
+ * and/or one or more recipes whose ingredients were flagged 'need'), but we
+ * lead with the item itself — at the store the reason doesn't matter, only
+ * what to grab.
+ */
+
 export default function ShopScreen({ categories, recipes, toast }) {
-  const [shopData, setShopData]   = useState(null);
-  const [checked, setChecked]     = useState({});
-  const [loading, setLoading]     = useState(true);
+  const [shopData, setShopData] = useState(null);
+  const [checked, setChecked]   = useState({});
+  const [loading, setLoading]   = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -13,31 +23,44 @@ export default function ShopScreen({ categories, recipes, toast }) {
       setShopData(data);
     } catch (e) { toast('Error loading shopping list: ' + e.message); }
     setLoading(false);
-  }, []);
+  }, [toast]);
 
-  useEffect(() => { load(); }, [categories, recipes]);
+  // Reload when pantry or recipes state changes (e.g. user flipped an
+  // ingredient's have/need status on the Recipes tab).
+  useEffect(() => { load(); }, [categories, recipes, load]);
 
-  function toggle(key) {
-    setChecked(c => ({ ...c, [key]: !c[key] }));
+  const items = shopData?.items || [];
+
+  // Group by category, preserving server-side ordering.
+  const byCategory = [];
+  const catIndex = new Map();
+  for (const item of items) {
+    const key = item.category_id || '__none__';
+    if (!catIndex.has(key)) {
+      catIndex.set(key, byCategory.length);
+      byCategory.push({
+        id:   item.category_id,
+        name: item.category_name || 'Uncategorized',
+        items: [],
+      });
+    }
+    byCategory[catIndex.get(key)].items.push(item);
   }
 
+  const total     = items.length;
+  const doneCount = items.filter(i => checked[i.good_id]).length;
+  const remaining = total - doneCount;
+  const pct       = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+
+  function toggle(id) {
+    setChecked(c => ({ ...c, [id]: !c[id] }));
+  }
   function clearDone() {
     setChecked({});
     toast('Cleared ✓');
   }
 
   if (loading) return <div className="scroll-area"><div className="spinner" /></div>;
-
-  const recipeNeeds = shopData?.recipe_needs  || [];
-  const pantryNeeds = shopData?.pantry_needs  || [];
-  const allItems = [
-    ...recipeNeeds.map(i => ({ ...i, key: 'r_' + i.name.toLowerCase(), source: 'recipe' })),
-    ...pantryNeeds.map(i => ({ ...i, key: 'p_' + i.name.toLowerCase(), source: 'pantry' })),
-  ];
-  const total     = allItems.length;
-  const doneCount = allItems.filter(i => checked[i.key]).length;
-  const remaining = total - doneCount;
-  const pct       = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   return (
     <div className="scroll-area">
@@ -73,53 +96,29 @@ export default function ShopScreen({ categories, recipes, toast }) {
         <div className="empty-state">
           <div className="empty-icon">🎉</div>
           <div className="empty-title">All stocked up!</div>
-          <div className="empty-sub">Mark items as "Need" in the pantry to build your shopping list.</div>
+          <div className="empty-sub">
+            Mark items as "Need" in the pantry, or flag recipe ingredients as
+            "Need" on the Recipes tab, and they'll show up here.
+          </div>
         </div>
       ) : (
-        <>
-          {recipeNeeds.length > 0 && (
-            <>
-              <div className="section-label">From recipes</div>
-              <div className="card">
-                {recipeNeeds.map(item => {
-                  const key = 'r_' + item.name.toLowerCase();
-                  const done = !!checked[key];
-                  return (
-                    <ShopItem
-                      key={key} item={item} itemKey={key}
-                      done={done} onToggle={toggle}
-                      subtitle={`${item.qty}${item.qty && item.recipes?.length ? ' · ' : ''}${item.recipes?.join(', ') || ''}`}
-                      sourceLabel="Recipe" sourceCls="recipe"
-                    />
-                  );
-                })}
-              </div>
-            </>
-          )}
-
-          {pantryNeeds.length > 0 && (
-            <>
-              <div className="section-label">Pantry restock</div>
-              <div className="card">
-                {pantryNeeds.map(item => {
-                  const key = 'p_' + item.name.toLowerCase();
-                  const done = !!checked[key];
-                  return (
-                    <ShopItem
-                      key={key} item={item} itemKey={key}
-                      done={done} onToggle={toggle}
-                      subtitle={`${item.qty}${item.qty && item.category_name ? ' · ' : ''}${item.category_name || ''}`}
-                      sourceLabel="Pantry" sourceCls="pantry"
-                    />
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </>
+        byCategory.map(group => (
+          <div key={group.id || '__none__'}>
+            <div className="section-label">{group.name}</div>
+            <div className="card">
+              {group.items.map(item => (
+                <ShopItem
+                  key={item.good_id}
+                  item={item}
+                  done={!!checked[item.good_id]}
+                  onToggle={() => toggle(item.good_id)}
+                />
+              ))}
+            </div>
+          </div>
+        ))
       )}
 
-      {/* Refresh button */}
       <button
         onClick={load}
         style={{
@@ -136,16 +135,26 @@ export default function ShopScreen({ categories, recipes, toast }) {
   );
 }
 
-function ShopItem({ item, itemKey, done, onToggle, subtitle, sourceLabel, sourceCls }) {
-  const sourceColors = {
-    recipe: { bg: 'rgba(26,58,42,0.09)', color: 'var(--forest-mid)' },
-    pantry: { bg: 'var(--amber-light)',  color: 'var(--amber)' },
-  };
-  const sc = sourceColors[sourceCls];
+function ShopItem({ item, done, onToggle }) {
+  const hasPantry  = item.sources.some(s => s.kind === 'pantry');
+  const recipeSrcs = item.sources.filter(s => s.kind === 'recipe');
+
+  // Subtitle: qty · pantry hint · recipe emojis
+  const parts = [];
+  if (item.qty) parts.push(item.qty);
+  if (hasPantry) parts.push('pantry');
+  if (recipeSrcs.length) {
+    parts.push(
+      recipeSrcs
+        .map(r => `${r.emoji || '🍽️'} ${r.recipe_name}`)
+        .join(' · ')
+    );
+  }
+  const subtitle = parts.join(' · ');
 
   return (
     <div
-      onClick={() => onToggle(itemKey)}
+      onClick={onToggle}
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '10px 14px', borderBottom: '1px solid var(--cream-dark)',
@@ -163,24 +172,27 @@ function ShopItem({ item, itemKey, done, onToggle, subtitle, sourceLabel, source
         {done ? '✓' : ''}
       </div>
 
-      {/* Name + subtitle */}
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 14, color: done ? 'var(--ink-faint)' : 'var(--ink)', textDecoration: done ? 'line-through' : 'none', transition: 'all 0.15s' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 14,
+          color: done ? 'var(--ink-faint)' : 'var(--ink)',
+          textDecoration: done ? 'line-through' : 'none',
+          transition: 'all 0.15s',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}>
           {item.name}
         </div>
         {subtitle && (
-          <div style={{ fontSize: 11, color: 'var(--ink-faint)', marginTop: 1 }}>{subtitle}</div>
+          <div style={{
+            fontSize: 11, color: 'var(--ink-faint)', marginTop: 1,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {subtitle}
+          </div>
         )}
       </div>
-
-      {/* Source badge */}
-      <span style={{
-        fontSize: 10, fontWeight: 500, padding: '3px 8px',
-        borderRadius: 20, background: sc.bg, color: sc.color,
-        flexShrink: 0,
-      }}>
-        {sourceLabel}
-      </span>
     </div>
   );
 }

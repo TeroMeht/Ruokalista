@@ -1,102 +1,157 @@
 require('dotenv').config();
 const { pool } = require('./index');
 
+/**
+ * Seed data for Viikkoruoka schema v2.
+ *
+ * Each good has a canonical row. Recipe ingredients reference goods by id.
+ * A few one-off ingredients (fresh dill, lemon, etc.) exist as goods with
+ * is_common=false so they don't clutter the pantry screen but still make it
+ * onto the shopping list when a recipe needs them.
+ */
+
 async function seed() {
   console.log('Seeding database with sample data...');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Clear existing data
+    // ── clean slate ────────────────────────────────────────
     await client.query('DELETE FROM recipe_ingredients');
     await client.query('DELETE FROM recipes');
-    await client.query('DELETE FROM pantry_items');
+    await client.query('DELETE FROM goods');
     await client.query('DELETE FROM pantry_categories');
 
-    // Categories
-    const cats = await client.query(`
+    // ── categories ─────────────────────────────────────────
+    const catRes = await client.query(`
       INSERT INTO pantry_categories (name, sort_order) VALUES
-        ('Dairy & Eggs', 0),
-        ('Vegetables',   1),
-        ('Meat & Fish',  2),
-        ('Pantry Staples', 3)
+        ('Dairy & Eggs',    0),
+        ('Vegetables',      1),
+        ('Meat & Fish',     2),
+        ('Pantry Staples',  3),
+        ('Herbs & Spices',  4),
+        ('Fruit',           5)
       RETURNING id, name
     `);
-    const catMap = Object.fromEntries(cats.rows.map(r => [r.name, r.id]));
+    const cat = Object.fromEntries(catRes.rows.map(r => [r.name, r.id]));
 
-    // Pantry items
-    await client.query(`
-      INSERT INTO pantry_items (category_id, name, qty, status, sort_order) VALUES
-        ($1,'Milk (3.5%)','1 L','have',0),
-        ($1,'Eggs','12 pcs','need',1),
-        ($1,'Greek yogurt','500 g','have',2),
-        ($1,'Butter','200 g','need',3),
-        ($1,'Cheese (gouda)','300 g','have',4),
-        ($2,'Onions','1 kg','have',0),
-        ($2,'Garlic','1 head','have',1),
-        ($2,'Tomatoes','500 g','need',2),
-        ($2,'Carrots','3 pcs','have',3),
-        ($2,'Bell peppers','2 pcs','unchecked',4),
-        ($2,'Broccoli','300 g','need',5),
-        ($3,'Chicken breast','600 g','have',0),
-        ($3,'Ground beef','400 g','need',1),
-        ($3,'Salmon fillet','400 g','unchecked',2),
-        ($4,'Pasta','2 × 500 g','have',0),
-        ($4,'Rice','1 kg','have',1),
-        ($4,'Olive oil','750 ml','need',2),
-        ($4,'Canned tomatoes','4 cans','have',3),
-        ($4,'Soy sauce','200 ml','need',4),
-        ($4,'Flour','1 kg','have',5)
-    `, [catMap['Dairy & Eggs'], catMap['Vegetables'], catMap['Meat & Fish'], catMap['Pantry Staples']]);
+    // ── goods ──────────────────────────────────────────────
+    // [name, category, qty, is_common, status]
+    const goods = [
+      // Dairy
+      ['Milk (3.5%)',     'Dairy & Eggs',   '1 L',     true,  'have'],
+      ['Eggs',            'Dairy & Eggs',   '12 pcs',  true,  'need'],
+      ['Greek yogurt',    'Dairy & Eggs',   '500 g',   true,  'have'],
+      ['Butter',          'Dairy & Eggs',   '200 g',   true,  'need'],
+      ['Cheese (gouda)',  'Dairy & Eggs',   '300 g',   true,  'have'],
 
-    // Recipes
-    const r1 = await client.query(`
-      INSERT INTO recipes (emoji, name, cook_time, servings, notes) VALUES
-        ('🍝','Pasta Bolognese',40,4,'Use good quality canned tomatoes')
-      RETURNING id
-    `);
-    await client.query(`
-      INSERT INTO recipe_ingredients (recipe_id, name, qty, sort_order) VALUES
-        ($1,'Pasta','500 g',0),($1,'Ground beef','400 g',1),
-        ($1,'Tomatoes','500 g',2),($1,'Onions','1 pc',3),
-        ($1,'Garlic','3 cloves',4),($1,'Olive oil','3 tbsp',5)
-    `, [r1.rows[0].id]);
+      // Vegetables
+      ['Onions',          'Vegetables',     '1 kg',    true,  'have'],
+      ['Garlic',          'Vegetables',     '1 head',  true,  'have'],
+      ['Tomatoes',        'Vegetables',     '500 g',   true,  'need'],
+      ['Carrots',         'Vegetables',     '3 pcs',   true,  'have'],
+      ['Bell peppers',    'Vegetables',     '2 pcs',   true,  'unchecked'],
+      ['Broccoli',        'Vegetables',     '300 g',   true,  'need'],
 
-    const r2 = await client.query(`
-      INSERT INTO recipes (emoji, name, cook_time, servings, notes) VALUES
-        ('🍲','Chicken Soup',60,6,'Great for meal prep')
-      RETURNING id
-    `);
-    await client.query(`
-      INSERT INTO recipe_ingredients (recipe_id, name, qty, sort_order) VALUES
-        ($1,'Chicken breast','600 g',0),($1,'Carrots','3 pcs',1),
-        ($1,'Onions','2 pcs',2),($1,'Garlic','2 cloves',3),
-        ($1,'Rice','200 g',4)
-    `, [r2.rows[0].id]);
+      // Meat & fish
+      ['Chicken breast',  'Meat & Fish',    '600 g',   true,  'have'],
+      ['Ground beef',     'Meat & Fish',    '400 g',   true,  'need'],
+      ['Salmon fillet',   'Meat & Fish',    '400 g',   true,  'unchecked'],
 
-    const r3 = await client.query(`
-      INSERT INTO recipes (emoji, name, cook_time, servings, notes) VALUES
-        ('🥗','Vegetable Stir-fry',20,2,'')
-      RETURNING id
-    `);
-    await client.query(`
-      INSERT INTO recipe_ingredients (recipe_id, name, qty, sort_order) VALUES
-        ($1,'Bell peppers','2 pcs',0),($1,'Broccoli','300 g',1),
-        ($1,'Soy sauce','3 tbsp',2),($1,'Rice','200 g',3),
-        ($1,'Garlic','2 cloves',4),($1,'Olive oil','2 tbsp',5)
-    `, [r3.rows[0].id]);
+      // Pantry staples
+      ['Pasta',           'Pantry Staples', '2 × 500 g', true, 'have'],
+      ['Rice',            'Pantry Staples', '1 kg',    true,  'have'],
+      ['Olive oil',       'Pantry Staples', '750 ml',  true,  'need'],
+      ['Canned tomatoes', 'Pantry Staples', '4 cans',  true,  'have'],
+      ['Soy sauce',       'Pantry Staples', '200 ml',  true,  'need'],
+      ['Flour',           'Pantry Staples', '1 kg',    true,  'have'],
 
-    const r4 = await client.query(`
-      INSERT INTO recipes (emoji, name, cook_time, servings, notes) VALUES
-        ('🐟','Baked Salmon',25,2,'Season with lemon and dill')
-      RETURNING id
-    `);
-    await client.query(`
-      INSERT INTO recipe_ingredients (recipe_id, name, qty, sort_order) VALUES
-        ($1,'Salmon fillet','400 g',0),
-        ($1,'Olive oil','2 tbsp',1),
-        ($1,'Garlic','2 cloves',2)
-    `, [r4.rows[0].id]);
+      // Fruit
+      ['Lemon',           'Fruit',          '2 pcs',   true,  'unchecked'],
+
+      // One-off recipe ingredients (is_common = false) — don't show on pantry screen
+      ['Fresh dill',      'Herbs & Spices', '',        false, 'unchecked'],
+      ['Black pepper',    'Herbs & Spices', '',        false, 'unchecked'],
+      ['Salt',            'Herbs & Spices', '',        false, 'unchecked'],
+    ];
+
+    const goodIds = {};
+    for (let i = 0; i < goods.length; i++) {
+      const [name, catName, qty, isCommon, status] = goods[i];
+      const { rows } = await client.query(
+        `INSERT INTO goods (name, category_id, qty, is_common, status, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, name`,
+        [name, cat[catName], qty, isCommon, status, i]
+      );
+      goodIds[name] = rows[0].id;
+    }
+
+    // ── recipes + ingredients ──────────────────────────────
+    async function insertRecipe({ emoji, name, cook_time, servings, notes, ingredients }) {
+      const { rows } = await client.query(
+        `INSERT INTO recipes (emoji, name, cook_time, servings, notes, sort_order)
+         VALUES ($1,$2,$3,$4,$5,(SELECT COALESCE(MAX(sort_order)+1,0) FROM recipes))
+         RETURNING id`,
+        [emoji, name, cook_time, servings, notes]
+      );
+      const recipeId = rows[0].id;
+      for (let i = 0; i < ingredients.length; i++) {
+        // ingredients entry: [goodName, qty]  OR  [goodName, qty, status]
+        const [goodName, qty, status = 'unchecked'] = ingredients[i];
+        const goodId = goodIds[goodName];
+        if (!goodId) throw new Error(`seed: unknown good "${goodName}"`);
+        await client.query(
+          `INSERT INTO recipe_ingredients (recipe_id, good_id, qty, status, sort_order)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [recipeId, goodId, qty, status, i]
+        );
+      }
+    }
+
+    // Bolognese has two ingredients user wants to cook and is missing — good
+    // demo data for the shopping list (ground beef + olive oil show up).
+    await insertRecipe({
+      emoji: '🍝', name: 'Pasta Bolognese', cook_time: 40, servings: 4,
+      notes: 'Use good quality canned tomatoes',
+      ingredients: [
+        ['Pasta',           '500 g',      'have'],
+        ['Ground beef',     '400 g',      'need'],
+        ['Canned tomatoes', '2 cans',     'have'],
+        ['Onions',          '1 pc',       'have'],
+        ['Garlic',          '3 cloves',   'have'],
+        ['Olive oil',       '3 tbsp',     'need'],
+        ['Salt',            'to taste',   'have'],
+        ['Black pepper',    'to taste',   'unchecked'],
+      ],
+    });
+
+    await insertRecipe({
+      emoji: '🍲', name: 'Chicken Soup', cook_time: 60, servings: 6,
+      notes: 'Great for meal prep',
+      ingredients: [
+        ['Chicken breast', '600 g'], ['Carrots', '3 pcs'], ['Onions', '2 pcs'],
+        ['Garlic', '2 cloves'], ['Rice', '200 g'], ['Salt', 'to taste'],
+      ],
+    });
+
+    await insertRecipe({
+      emoji: '🥗', name: 'Vegetable Stir-fry', cook_time: 20, servings: 2,
+      notes: '',
+      ingredients: [
+        ['Bell peppers', '2 pcs'], ['Broccoli', '300 g'], ['Soy sauce', '3 tbsp'],
+        ['Rice', '200 g'], ['Garlic', '2 cloves'], ['Olive oil', '2 tbsp'],
+      ],
+    });
+
+    await insertRecipe({
+      emoji: '🐟', name: 'Baked Salmon', cook_time: 25, servings: 2,
+      notes: 'Season with lemon and dill',
+      ingredients: [
+        ['Salmon fillet', '400 g'], ['Olive oil', '2 tbsp'], ['Garlic', '2 cloves'],
+        ['Lemon', '1 pc'], ['Fresh dill', 'small bunch'], ['Salt', 'to taste'],
+      ],
+    });
 
     await client.query('COMMIT');
     console.log('✅ Seed data inserted');

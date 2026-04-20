@@ -4,10 +4,13 @@ import TabBar    from './components/TabBar.jsx';
 import PantryScreen  from './pages/PantryScreen.jsx';
 import RecipesScreen from './pages/RecipesScreen.jsx';
 import ShopScreen    from './pages/ShopScreen.jsx';
-import { api } from './lib/api.js';
+import LoginScreen   from './pages/LoginScreen.jsx';
+import { api, onUnauthorized } from './lib/api.js';
+import { auth } from './lib/auth.js';
 import { useToast } from './hooks/useToast.js';
 
 export default function App() {
+  const [authed, setAuthed]       = useState(() => auth.isLoggedIn());
   const [tab, setTab]             = useState('pantry');
   const [categories, setCategories] = useState([]);
   const [recipes, setRecipes]     = useState([]);
@@ -16,6 +19,7 @@ export default function App() {
   const { msg: toastMsg, visible: toastVisible, show: toast } = useToast();
 
   const loadAll = useCallback(async () => {
+    setLoading(true);
     try {
       const [cats, recs] = await Promise.all([api.getCategories(), api.getRecipes()]);
       setCategories(cats);
@@ -27,7 +31,26 @@ export default function App() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadAll(); }, []);
+  // If any request comes back 401, bounce the user to the login screen.
+  useEffect(() => onUnauthorized(() => setAuthed(false)), []);
+
+  // Load data once we're authenticated.
+  useEffect(() => {
+    if (authed) loadAll();
+    else setLoading(false);
+  }, [authed, loadAll]);
+
+  function handleSignOut() {
+    auth.clear();
+    setAuthed(false);
+    setCategories([]);
+    setRecipes([]);
+    setError(null);
+  }
+
+  if (!authed) {
+    return <LoginScreen onLogin={() => setAuthed(true)} />;
+  }
 
   if (loading) {
     return (
@@ -50,16 +73,21 @@ export default function App() {
         <div style={{ fontSize: 12, background: 'rgba(0,0,0,0.3)', color: 'var(--mint)', padding: '8px 14px', borderRadius: 8, fontFamily: 'monospace', marginBottom: 24 }}>
           {error}
         </div>
-        <button onClick={loadAll} style={{ padding: '10px 24px', borderRadius: 8, background: 'var(--mint)', color: 'var(--forest)', border: 'none', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
-          Retry
-        </button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={loadAll} style={{ padding: '10px 24px', borderRadius: 8, background: 'var(--mint)', color: 'var(--forest)', border: 'none', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+            Retry
+          </button>
+          <button onClick={handleSignOut} style={{ padding: '10px 24px', borderRadius: 8, background: 'transparent', color: 'var(--mint)', border: '1px solid var(--mint)', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+            Sign out
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
-      <Header categories={categories} />
+      <Header categories={categories} onSignOut={handleSignOut} />
 
       {/* Screens - all mounted, only active one is visible */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
