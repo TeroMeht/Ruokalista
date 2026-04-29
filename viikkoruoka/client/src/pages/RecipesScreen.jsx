@@ -6,28 +6,30 @@ import { api } from '../lib/api.js';
  * Recipes tab.
  *
  * Each recipe lists its ingredients. Every ingredient has its own status
- * (have / need / unchecked) that the user toggles right here. Marking an
- * ingredient as "need" puts it on the shopping list — this is the ONLY way
- * recipe-driven items reach the shop, independent of the pantry tab.
+ * (have / need) that the user toggles right here. Marking an ingredient as
+ * "need" puts it on the shopping list — this is the ONLY way recipe-driven
+ * items reach the shop, independent of the pantry tab.
+ *
+ * Schema v3:
+ *   • Statuses are 'have' / 'need' only — no third "unchecked" state.
+ *   • Tap an ingredient row to toggle have ↔ need.
+ *   • Every ingredient picks a CATEGORY in the recipe builder. New ingredients
+ *     reuse the category if a good with that name already exists; otherwise the
+ *     selected category is what the new good gets.
  *
  * The pill in the header summarises the ingredient statuses for that recipe:
- *   all 'have'                → "Ready to cook"
- *   any 'need'                → "N missing"
- *   only 'have'/'unchecked'   → "N unchecked"
+ *   all 'have' → "Ready to cook"
+ *   any 'need' → "N missing"
  */
 
 const EMOJIS = ['🍝','🍲','🥗','🍱','🥩','🐟','🍜','🍛','🥘','🫕','🥞','🥙','🍔','🌮','🫔','🥚','🍳','🥦'];
 
-// Same 3-state cycle as the pantry tab.
-const STATUS_CYCLE = { have: 'need', need: 'unchecked', unchecked: 'have' };
-
 function StatusDot({ status }) {
   const styles = {
-    have:      { bg: 'var(--forest)',      border: 'var(--forest)',     color: 'white', icon: '✓' },
-    need:      { bg: 'var(--rust-light)',  border: 'var(--rust)',       color: 'var(--rust)', icon: '✕' },
-    unchecked: { bg: 'white',              border: 'var(--cream-dark)', color: 'transparent', icon: '' },
+    have: { bg: 'var(--forest)',     border: 'var(--forest)', color: 'white',       icon: '✓' },
+    need: { bg: 'var(--rust-light)', border: 'var(--rust)',   color: 'var(--rust)', icon: '✕' },
   };
-  const s = styles[status] || styles.unchecked;
+  const s = styles[status] || styles.need;
   return (
     <span style={{
       width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
@@ -40,22 +42,19 @@ function StatusDot({ status }) {
 }
 
 function RecipeStatusBadge({ ingredients }) {
-  const total     = ingredients.length;
-  const have      = ingredients.filter(i => i.status === 'have').length;
-  const need      = ingredients.filter(i => i.status === 'need').length;
-  const unchecked = total - have - need;
+  const total = ingredients.length;
+  const need  = ingredients.filter(i => i.status === 'need').length;
 
-  if (total === 0)   return <span className="badge badge-gray">No ingredients</span>;
-  if (need > 0)      return <span className="badge badge-red">{need} missing</span>;
-  if (unchecked > 0) return <span className="badge badge-amber">{unchecked} to check</span>;
+  if (total === 0) return <span className="badge badge-gray">No ingredients</span>;
+  if (need > 0)    return <span className="badge badge-red">{need} missing</span>;
   return <span className="badge badge-green">Ready to cook</span>;
 }
 
-function IngredientRow({ ing, onCycle, busy }) {
-  const status = ing.status || 'unchecked';
+function IngredientRow({ ing, onToggle, busy }) {
+  const status = ing.status || 'need';
   return (
     <div
-      onClick={busy ? undefined : onCycle}
+      onClick={busy ? undefined : onToggle}
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '8px 0', borderBottom: '1px solid var(--cream-dark)',
@@ -75,38 +74,57 @@ function IngredientRow({ ing, onCycle, busy }) {
   );
 }
 
-function IngBuilder({ ingredients, setIngredients }) {
+function IngBuilder({ ingredients, setIngredients, categories }) {
   return (
     <div>
       {ingredients.map((ing, i) => (
-        <div key={i} className="ing-row-builder">
-          <input className="form-input" placeholder="Ingredient name"
-            value={ing.name}
+        <div key={i}>
+          <div className="ing-row-builder">
+            <input className="form-input" placeholder="Ingredient name"
+              value={ing.name}
+              onChange={e => {
+                const next = [...ingredients];
+                next[i] = { ...next[i], name: e.target.value };
+                setIngredients(next);
+              }}
+            />
+            <input className="form-input qty-in" placeholder="Qty"
+              value={ing.qty}
+              onChange={e => {
+                const next = [...ingredients];
+                next[i] = { ...next[i], qty: e.target.value };
+                setIngredients(next);
+              }}
+            />
+            <button className="remove-ing-btn" onClick={() => setIngredients(ingredients.filter((_, j) => j !== i))}>×</button>
+          </div>
+          {/* Category picker — required for every ingredient */}
+          <select
+            className="form-input"
+            style={{ fontSize: 12, padding: '6px 8px', marginTop: 4, marginBottom: 8 }}
+            value={ing.category_id || ''}
             onChange={e => {
               const next = [...ingredients];
-              next[i] = { ...next[i], name: e.target.value };
+              next[i] = { ...next[i], category_id: e.target.value };
               setIngredients(next);
             }}
-          />
-          <input className="form-input qty-in" placeholder="Qty"
-            value={ing.qty}
-            onChange={e => {
-              const next = [...ingredients];
-              next[i] = { ...next[i], qty: e.target.value };
-              setIngredients(next);
-            }}
-          />
-          <button className="remove-ing-btn" onClick={() => setIngredients(ingredients.filter((_, j) => j !== i))}>×</button>
+          >
+            <option value="">Select category...</option>
+            {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
         </div>
       ))}
-      <button className="add-ing-btn" onClick={() => setIngredients([...ingredients, { name: '', qty: '' }])}>
+      <button
+        className="add-ing-btn"
+        onClick={() => setIngredients([...ingredients, { name: '', qty: '', category_id: '' }])}
+      >
         + Add ingredient
       </button>
     </div>
   );
 }
 
-function RecipeModal({ open, onClose, onSave, initialRecipe }) {
+function RecipeModal({ open, onClose, onSave, initialRecipe, categories }) {
   const editing = !!initialRecipe;
   const [emoji, setEmoji]       = useState(initialRecipe?.emoji || '🍝');
   const [name, setName]         = useState(initialRecipe?.name || '');
@@ -114,8 +132,11 @@ function RecipeModal({ open, onClose, onSave, initialRecipe }) {
   const [servings, setServings] = useState(initialRecipe?.servings || 4);
   const [notes, setNotes]       = useState(initialRecipe?.notes || '');
   const [ingredients, setIngredients] = useState(
-    initialRecipe?.ingredients?.map(i => ({ name: i.name, qty: i.qty })) || [{ name: '', qty: '' }, { name: '', qty: '' }]
+    initialRecipe?.ingredients?.map(i => ({
+      name: i.name, qty: i.qty, category_id: i.category_id || '',
+    })) || [{ name: '', qty: '', category_id: '' }, { name: '', qty: '', category_id: '' }]
   );
+  const [error, setError] = useState('');
 
   React.useEffect(() => {
     if (open) {
@@ -125,17 +146,27 @@ function RecipeModal({ open, onClose, onSave, initialRecipe }) {
       setServings(initialRecipe?.servings || 4);
       setNotes(initialRecipe?.notes || '');
       setIngredients(
-        initialRecipe?.ingredients?.map(i => ({ name: i.name, qty: i.qty })) || [{ name: '', qty: '' }, { name: '', qty: '' }]
+        initialRecipe?.ingredients?.map(i => ({
+          name: i.name, qty: i.qty, category_id: i.category_id || '',
+        })) || [{ name: '', qty: '', category_id: '' }, { name: '', qty: '', category_id: '' }]
       );
+      setError('');
     }
   }, [open, initialRecipe?.id]);
 
   function handleSave() {
-    if (!name.trim()) return;
+    if (!name.trim()) { setError('Recipe needs a name'); return; }
+    const filled = ingredients.filter(i => i.name.trim());
+    const missingCat = filled.find(i => !i.category_id);
+    if (missingCat) {
+      setError(`Pick a category for "${missingCat.name}"`);
+      return;
+    }
+    setError('');
     onSave({
       emoji, name: name.trim(), cook_time: Number(cookTime),
       servings: Number(servings), notes: notes.trim(),
-      ingredients: ingredients.filter(i => i.name.trim()),
+      ingredients: filled,
     });
   }
 
@@ -172,9 +203,14 @@ function RecipeModal({ open, onClose, onSave, initialRecipe }) {
           value={notes} onChange={e => setNotes(e.target.value)} />
       </div>
       <div className="form-group">
-        <label className="form-label">Ingredients</label>
-        <IngBuilder ingredients={ingredients} setIngredients={setIngredients} />
+        <label className="form-label">
+          Ingredients <span style={{ fontSize: 11, color: 'var(--ink-faint)', fontWeight: 400 }}>· each needs a category</span>
+        </label>
+        <IngBuilder ingredients={ingredients} setIngredients={setIngredients} categories={categories} />
       </div>
+      {error && (
+        <div style={{ fontSize: 12, color: 'var(--rust)', marginBottom: 8 }}>{error}</div>
+      )}
       <button className="btn btn-primary btn-full" style={{ marginTop: 4 }} onClick={handleSave}>
         {editing ? 'Save changes' : 'Add recipe'}
       </button>
@@ -216,8 +252,10 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
     } catch (e) { toast('Error: ' + e.message); }
   }
 
-  async function cycleIngredient(recipe, ing) {
-    const nextStatus = STATUS_CYCLE[ing.status || 'unchecked'];
+  // Toggle have ↔ need on an ingredient row.
+  async function toggleIngredient(recipe, ing) {
+    const current = ing.status || 'need';
+    const nextStatus = current === 'have' ? 'need' : 'have';
     // Optimistic update
     setRecipes(rs => rs.map(r => r.id !== recipe.id ? r : {
       ...r,
@@ -234,7 +272,7 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
       // Roll back
       setRecipes(rs => rs.map(r => r.id !== recipe.id ? r : {
         ...r,
-        ingredients: r.ingredients.map(i => i.id === ing.id ? { ...i, status: ing.status } : i),
+        ingredients: r.ingredients.map(i => i.id === ing.id ? { ...i, status: current } : i),
       }));
       toast('Error: ' + e.message);
     } finally {
@@ -304,7 +342,7 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
                       letterSpacing: '0.06em', textTransform: 'uppercase',
                       padding: '8px 0 4px',
                     }}>
-                      Tap each to cycle: have → need → unchecked
+                      Tap each to toggle: have ↔ need
                     </div>
                     {recipe.ingredients.length === 0 ? (
                       <p style={{ fontSize: 13, color: 'var(--ink-faint)', padding: '4px 0' }}>No ingredients listed</p>
@@ -314,7 +352,7 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
                           key={ing.id}
                           ing={ing}
                           busy={!!pendingIng[ing.id]}
-                          onCycle={() => cycleIngredient(recipe, ing)}
+                          onToggle={() => toggleIngredient(recipe, ing)}
                         />
                       ))
                     )}
@@ -340,6 +378,7 @@ export default function RecipesScreen({ recipes, setRecipes, categories, toast }
         onClose={() => setModalOpen(false)}
         onSave={handleSave}
         initialRecipe={editRecipe}
+        categories={categories}
       />
     </div>
   );

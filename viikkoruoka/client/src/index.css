@@ -60,10 +60,11 @@ input, select, textarea { font-family: inherit; }
 }
 
 /* ── Section labels ── */
+/* Used as category headers on the shopping list. Kept bigger and black so
+   categories read as the primary structure of the list. */
 .section-label {
-  font-size: 10px; font-weight: 500;
-  letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--ink-faint); margin: 18px 2px 7px;
+  font-size: 16px; font-weight: 700;
+  color: #000; margin: 18px 2px 7px;
 }
 .section-label:first-child { margin-top: 4px; }
 

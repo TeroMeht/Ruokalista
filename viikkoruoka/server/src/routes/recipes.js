@@ -4,15 +4,26 @@ const db = require('../db');
 /*
  * Recipe routes.
  *
- * Each ingredient row has its OWN status (have / need / unchecked) set on the
+ * Each ingredient row has its OWN status (have / need) set on the
  * Recipes page. This is independent of the pantry — a recipe can want 1 kg of
  * flour and the user can mark "need" on that recipe even if their pantry has
  * flour listed separately as a household staple.
  *
- * Client sends ingredients as [{ name, qty, status? }].
+ * Schema v3:
+ *   • Every good MUST have a category_id. The recipe modal collects it per
+ *     ingredient row, and we update the underlying good when an ingredient
+ *     is added or its category is changed.
+ *   • status is 'have' or 'need' only. Default for new ingredients is 'need'.
+ *
+ * Client sends ingredients as [{ name, qty, status?, category_id }].
  * Server upserts a good by case-insensitive name (creating a one-off with
  * is_common=false if it doesn't exist) and stores status on the junction row.
  */
+
+const VALID_STATUS = new Set(['have', 'need']);
+function badStatus(s) {
+  return s !== undefined && !VALID_STATUS.has(s);
+}
 
 const SELECT_INGREDIENTS = `
   SELECT ri.id, ri.recipe_id, ri.good_id, ri.qty, ri.status, ri.sort_order,
@@ -23,19 +34,48 @@ const SELECT_INGREDIENTS = `
    ORDER BY ri.sort_order
 `;
 
-async function upsertGoodByName(client, rawName) {
+// Look up or create a category to use as the default when the client didn't
+// supply one (legacy code paths). Returns an id.
+async function ensureFallbackCategory(client) {
+  const found = await client.query(
+    `SELECT id FROM pantry_categories WHERE LOWER(name) = 'uncategorized' LIMIT 1`
+  );
+  if (found.rows.length) return found.rows[0].id;
+  const { rows } = await client.query(
+    `INSERT INTO pantry_categories (name, sort_order)
+     VALUES ('Uncategorized',
+             COALESCE((SELECT MAX(sort_order)+1 FROM pantry_categories), 0))
+     RETURNING id`
+  );
+  return rows[0].id;
+}
+
+// Find or create a good by case-insensitive name. If `categoryId` is provided
+// we update the good's category_id (so editing an ingredient's category in
+// any recipe propagates to the canonical good). Returns the good id.
+async function upsertGoodByName(client, rawName, categoryId, fallbackCategoryId) {
   const name = (rawName || '').trim();
   if (!name) return null;
+  const targetCat = categoryId || fallbackCategoryId;
   const existing = await client.query(
     `SELECT id FROM goods WHERE LOWER(TRIM(name)) = LOWER($1)`,
     [name]
   );
-  if (existing.rows.length) return existing.rows[0].id;
+  if (existing.rows.length) {
+    if (categoryId) {
+      // Caller specified a category — keep the good's category in sync.
+      await client.query(
+        `UPDATE goods SET category_id=$1 WHERE id=$2`,
+        [categoryId, existing.rows[0].id]
+      );
+    }
+    return existing.rows[0].id;
+  }
   const { rows } = await client.query(
-    `INSERT INTO goods (name, is_common, status)
-     VALUES ($1, false, 'unchecked')
+    `INSERT INTO goods (name, category_id, is_common, status)
+     VALUES ($1, $2, false, 'need')
      RETURNING id`,
-    [name]
+    [name, targetCat]
   );
   return rows[0].id;
 }
@@ -49,14 +89,28 @@ async function writeIngredients(client, recipeId, ingredients) {
   const prevStatus = new Map(existing.rows.map(r => [r.good_id, r.status]));
 
   await client.query('DELETE FROM recipe_ingredients WHERE recipe_id=$1', [recipeId]);
+
+  // Lazily resolve a fallback for any ingredient that arrives without a
+  // category_id (older clients, or rare edge cases).
+  let fallbackCat = null;
+  async function fallback() {
+    if (!fallbackCat) fallbackCat = await ensureFallbackCategory(client);
+    return fallbackCat;
+  }
+
   const seen = new Set();
   for (let i = 0; i < ingredients.length; i++) {
     const ing = ingredients[i] || {};
-    const goodId = await upsertGoodByName(client, ing.name);
+    const fb = await fallback();
+    const goodId = await upsertGoodByName(client, ing.name, ing.category_id || null, fb);
     if (!goodId) continue;
     if (seen.has(goodId)) continue;  // UNIQUE(recipe_id, good_id)
     seen.add(goodId);
-    const status = ing.status || prevStatus.get(goodId) || 'unchecked';
+
+    let status = ing.status;
+    if (badStatus(status)) status = undefined;
+    if (!status) status = prevStatus.get(goodId) || 'need';
+
     await client.query(
       `INSERT INTO recipe_ingredients (recipe_id, good_id, qty, status, sort_order)
        VALUES ($1,$2,$3,$4,$5)`,
@@ -197,6 +251,9 @@ router.delete('/:id', async (req, res) => {
 // PATCH /api/recipes/:rid/ingredients/:id  { status?, qty? }
 router.patch('/:rid/ingredients/:id', async (req, res) => {
   const { status, qty } = req.body;
+  if (badStatus(status)) {
+    return res.status(400).json({ error: "status must be 'have' or 'need'" });
+  }
   try {
     const fields = [];
     const vals = [];

@@ -5,7 +5,17 @@ const db = require('../db');
  * Pantry routes operate on *common goods* (goods.is_common = true).
  * Response shape is kept compatible with the existing client:
  *   GET /categories → [{id, name, sort_order, items: [{id, name, qty, status, category_id, ...}]}]
+ *
+ * Schema v3 invariants enforced here:
+ *   • status is always 'have' or 'need' (no 'unchecked')
+ *   • category_id is required on every item
  */
+
+const VALID_STATUS = new Set(['have', 'need']);
+
+function badStatus(s) {
+  return s !== undefined && !VALID_STATUS.has(s);
+}
 
 // ── Categories ───────────────────────────────────────────────
 router.get('/categories', async (req, res) => {
@@ -46,21 +56,93 @@ router.post('/categories', async (req, res) => {
   }
 });
 
-router.delete('/categories/:id', async (req, res) => {
+// PATCH /categories/:id — rename a category.
+router.patch('/categories/:id', async (req, res) => {
+  const { name } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'name required' });
   try {
-    // goods.category_id is ON DELETE SET NULL — goods are preserved, just uncategorised.
-    await db.query('DELETE FROM pantry_categories WHERE id=$1', [req.params.id]);
-    res.json({ ok: true });
+    const { rows } = await db.query(
+      `UPDATE pantry_categories SET name=$1 WHERE id=$2 RETURNING *`,
+      [name.trim(), req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'not found' });
+    res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// DELETE /categories/:id — cascade-delete the category and its items.
+//
+// Goods used by recipes can't be hard-deleted (recipe_ingredients FK is
+// RESTRICT and we'd break the recipe). For those, we keep the good but
+// reassign it to 'Uncategorized' and flip is_common=false so it stops
+// appearing on the pantry screen. For pantry-only goods we delete outright.
+router.delete('/categories/:id', async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Find or create an 'Uncategorized' fallback for orphaned recipe goods.
+    const fallback = await client.query(
+      `INSERT INTO pantry_categories (name, sort_order)
+         SELECT 'Uncategorized',
+                COALESCE((SELECT MAX(sort_order)+1 FROM pantry_categories), 0)
+         WHERE NOT EXISTS (
+           SELECT 1 FROM pantry_categories WHERE LOWER(name) = 'uncategorized'
+         )
+         RETURNING id`
+    );
+    const fallbackId = fallback.rows.length
+      ? fallback.rows[0].id
+      : (await client.query(
+          `SELECT id FROM pantry_categories WHERE LOWER(name) = 'uncategorized' LIMIT 1`
+        )).rows[0].id;
+
+    if (req.params.id === fallbackId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: "Can't delete 'Uncategorized'" });
+    }
+
+    // Goods in this category that are referenced by any recipe → keep but reassign.
+    await client.query(
+      `UPDATE goods
+          SET category_id = $1,
+              is_common  = false
+        WHERE category_id = $2
+          AND id IN (SELECT good_id FROM recipe_ingredients)`,
+      [fallbackId, req.params.id]
+    );
+
+    // Goods in this category that are NOT referenced anywhere → hard delete.
+    await client.query(
+      `DELETE FROM goods
+        WHERE category_id = $1
+          AND id NOT IN (SELECT good_id FROM recipe_ingredients)`,
+      [req.params.id]
+    );
+
+    // Now safe to delete the category itself.
+    await client.query('DELETE FROM pantry_categories WHERE id=$1', [req.params.id]);
+
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // ── Items (= common goods) ───────────────────────────────────
 router.post('/items', async (req, res) => {
-  const { category_id, name, qty = '', status = 'unchecked' } = req.body;
+  const { category_id, name, qty = '', status = 'need' } = req.body;
   if (!category_id || !name?.trim()) {
     return res.status(400).json({ error: 'category_id and name required' });
+  }
+  if (badStatus(status)) {
+    return res.status(400).json({ error: "status must be 'have' or 'need'" });
   }
   try {
     // Upsert by case-insensitive name: if a good already exists (maybe as a
@@ -98,6 +180,12 @@ router.post('/items', async (req, res) => {
 
 router.patch('/items/:id', async (req, res) => {
   const { status, name, qty, category_id } = req.body;
+  if (badStatus(status)) {
+    return res.status(400).json({ error: "status must be 'have' or 'need'" });
+  }
+  if (category_id === null) {
+    return res.status(400).json({ error: 'category_id is required' });
+  }
   try {
     const fields = [];
     const vals = [];
@@ -122,7 +210,8 @@ router.patch('/items/:id', async (req, res) => {
 });
 
 // DELETE a common good — if it's referenced by any recipe we keep the good but
-// flip it to is_common=false so the recipe link stays intact.
+// flip it to is_common=false so the recipe link stays intact. (Status flips
+// to 'have' so it doesn't sit on the shopping list under the recipe heading.)
 router.delete('/items/:id', async (req, res) => {
   const client = await db.pool.connect();
   try {
@@ -133,7 +222,7 @@ router.delete('/items/:id', async (req, res) => {
     );
     if (used.rows.length) {
       await client.query(
-        `UPDATE goods SET is_common=false, status='unchecked' WHERE id=$1`,
+        `UPDATE goods SET is_common=false, status='have' WHERE id=$1`,
         [req.params.id]
       );
     } else {

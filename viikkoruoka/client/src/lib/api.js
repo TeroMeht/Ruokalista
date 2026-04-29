@@ -42,6 +42,7 @@ export const api = {
   // Pantry
   getCategories:    ()           => req('GET',    '/pantry/categories'),
   addCategory:      (data)       => req('POST',   '/pantry/categories', data),
+  updateCategory:   (id, data)   => req('PATCH',  `/pantry/categories/${id}`, data),
   deleteCategory:   (id)         => req('DELETE', `/pantry/categories/${id}`),
   addItem:          (data)       => req('POST',   '/pantry/items', data),
   updateItem:       (id, data)   => req('PATCH',  `/pantry/items/${id}`, data),

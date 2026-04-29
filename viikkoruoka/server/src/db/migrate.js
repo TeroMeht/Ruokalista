@@ -2,17 +2,23 @@ require('dotenv').config();
 const { pool } = require('./index');
 
 /*
- * Schema v2 — goods-centric.
+ * Schema v3 — goods-centric, 2-state status, mandatory categories.
  *
- *   pantry_categories  : display groups on the pantry screen
+ *   pantry_categories  : display groups for everything on the shopping list
  *   goods              : canonical "thing" — referenced by pantry stock AND recipe ingredients
- *                        is_common=true means it shows on the pantry screen and has a stock status
- *                        is_common=false is a one-off recipe ingredient
+ *                        Every good MUST belong to a category (NOT NULL).
+ *                        is_common=true means it shows on the pantry screen.
+ *                        is_common=false is a one-off recipe ingredient (still has a category
+ *                        so it can be grouped on the shopping list).
+ *                        status is just 'have' or 'need' — no third "unchecked" state.
  *   recipes            : as before
- *   recipe_ingredients : links a recipe to a good (+ recipe-specific qty)
+ *   recipe_ingredients : links a recipe to a good (+ recipe-specific qty + status)
  *
  * Shopping list (computed) = common goods with status='need'
- *                          ∪ recipe ingredients whose good isn't currently 'have'.
+ *                          ∪ recipe ingredients with status='need'.
+ *
+ * If you're upgrading an existing v2 database, run migrate-v3.js instead — it
+ * preserves data. This script wipes and recreates from scratch.
  */
 
 const statements = [
@@ -32,14 +38,17 @@ const statements = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
 
+  // category_id is NOT NULL — every good belongs to a category. We use
+  // ON DELETE RESTRICT so the API can decide what to do (e.g. reassign to
+  // 'Uncategorized') instead of silently nulling out goods.
   `CREATE TABLE goods (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name         TEXT NOT NULL,
-    category_id  UUID REFERENCES pantry_categories(id) ON DELETE SET NULL,
+    category_id  UUID NOT NULL REFERENCES pantry_categories(id) ON DELETE RESTRICT,
     qty          TEXT NOT NULL DEFAULT '',
     is_common    BOOLEAN NOT NULL DEFAULT true,
-    status       TEXT NOT NULL DEFAULT 'unchecked'
-                   CHECK (status IN ('have','need','unchecked')),
+    status       TEXT NOT NULL DEFAULT 'need'
+                   CHECK (status IN ('have','need')),
     notes        TEXT NOT NULL DEFAULT '',
     sort_order   INTEGER NOT NULL DEFAULT 0,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -68,8 +77,8 @@ const statements = [
     recipe_id  UUID NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
     good_id    UUID NOT NULL REFERENCES goods(id)   ON DELETE RESTRICT,
     qty        TEXT NOT NULL DEFAULT '',
-    status     TEXT NOT NULL DEFAULT 'unchecked'
-                 CHECK (status IN ('have','need','unchecked')),
+    status     TEXT NOT NULL DEFAULT 'need'
+                 CHECK (status IN ('have','need')),
     sort_order INTEGER NOT NULL DEFAULT 0,
     UNIQUE (recipe_id, good_id)
   )`,
@@ -101,7 +110,7 @@ async function migrate() {
     for (const sql of statements) {
       await client.query(sql);
     }
-    console.log('✅ Schema v2 installed (goods, pantry_categories, recipes, recipe_ingredients)');
+    console.log('✅ Schema v3 installed (goods, pantry_categories, recipes, recipe_ingredients)');
   } catch (err) {
     console.error('❌ Migration failed:', err.message);
     process.exit(1);

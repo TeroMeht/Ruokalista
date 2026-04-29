@@ -2,18 +2,26 @@ import React, { useState } from 'react';
 import Modal from '../components/Modal.jsx';
 import { api } from '../lib/api.js';
 
-const STATUS_CYCLE = { have: 'need', need: 'unchecked', unchecked: 'have' };
-const STATUS_ICON  = { have: '✓', need: '✕', unchecked: '' };
-const STATUS_LABEL = { have: 'Have', need: 'Need', unchecked: 'Check' };
-const STATUS_BADGE = { have: 'badge-green', need: 'badge-red', unchecked: 'badge-gray' };
+/*
+ * Pantry tab.
+ *
+ * Schema v3 simplifications:
+ *   • Items are 'have' or 'need' — no third "unchecked" state.
+ *   • Tapping the dot toggles have ↔ need.
+ *   • Tapping the item name opens an edit modal (name, qty, category, status).
+ *   • Tapping the category name opens an edit modal (rename).
+ *   • Newly added items default to 'need' (you're listing what to remember).
+ */
+
+const STATUS_LABEL = { have: 'Have', need: 'Need' };
+const STATUS_BADGE = { have: 'badge-green', need: 'badge-red' };
 
 function ToggleDot({ status }) {
   const colors = {
-    have:      { bg: 'var(--forest)',      border: 'var(--forest)',     color: 'white' },
-    need:      { bg: 'var(--rust-light)',  border: 'var(--rust)',       color: 'var(--rust)' },
-    unchecked: { bg: 'white',             border: 'var(--cream-dark)', color: 'transparent' },
+    have: { bg: 'var(--forest)',     border: 'var(--forest)', color: 'white' },
+    need: { bg: 'var(--rust-light)', border: 'var(--rust)',   color: 'var(--rust)' },
   };
-  const c = colors[status];
+  const c = colors[status] || colors.need;
   return (
     <span style={{
       width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
@@ -22,7 +30,7 @@ function ToggleDot({ status }) {
       background: c.bg, border: `1.5px solid ${c.border}`, color: c.color,
       transition: 'all 0.15s',
     }}>
-      {STATUS_ICON[status]}
+      {status === 'have' ? '✓' : '✕'}
     </span>
   );
 }
@@ -31,16 +39,18 @@ export default function PantryScreen({ categories, setCategories, toast }) {
   const [collapsed, setCollapsed]     = useState({});
   const [addItemOpen, setAddItemOpen] = useState(false);
   const [addCatOpen, setAddCatOpen]   = useState(false);
-  const [newItem, setNewItem]         = useState({ name: '', qty: '', status: 'have', category_id: '' });
+  const [editItem, setEditItem]       = useState(null);  // { id, name, qty, status, category_id }
+  const [editCat, setEditCat]         = useState(null);  // { id, name }
+  const [newItem, setNewItem]         = useState({ name: '', qty: '', status: 'need', category_id: '' });
   const [newCatName, setNewCatName]   = useState('');
   const [quickInputs, setQuickInputs] = useState({});
   const [saving, setSaving]           = useState({});
 
   const setSav = (key, val) => setSaving(s => ({ ...s, [key]: val }));
 
-  // ── Status cycle ──────────────────────────────────────────
-  async function cycleStatus(catId, itemId, currentStatus) {
-    const next = STATUS_CYCLE[currentStatus];
+  // ── Status toggle (have ↔ need) ───────────────────────────
+  async function toggleStatus(catId, itemId, currentStatus) {
+    const next = currentStatus === 'have' ? 'need' : 'have';
     setSav(itemId, true);
     try {
       await api.updateItem(itemId, { status: next });
@@ -54,13 +64,13 @@ export default function PantryScreen({ categories, setCategories, toast }) {
     setSav(itemId, false);
   }
 
-  // ── Quick add in category ─────────────────────────────────
+  // ── Quick add in category — defaults to 'need' ────────────
   async function quickAdd(catId, e) {
     if (e.key !== 'Enter' && e.type !== 'click') return;
     const name = (quickInputs[catId] || '').trim();
     if (!name) return;
     try {
-      const item = await api.addItem({ category_id: catId, name, qty: '', status: 'unchecked' });
+      const item = await api.addItem({ category_id: catId, name, qty: '', status: 'need' });
       setCategories(cats => cats.map(cat =>
         cat.id !== catId ? cat : { ...cat, items: [...cat.items, item] }
       ));
@@ -90,8 +100,35 @@ export default function PantryScreen({ categories, setCategories, toast }) {
         cat.id !== newItem.category_id ? cat : { ...cat, items: [...cat.items, item] }
       ));
       setAddItemOpen(false);
-      setNewItem({ name: '', qty: '', status: 'have', category_id: '' });
+      setNewItem({ name: '', qty: '', status: 'need', category_id: '' });
       toast('Item added');
+    } catch (e) { toast('Error: ' + e.message); }
+  }
+
+  // ── Edit item modal ───────────────────────────────────────
+  async function submitEditItem() {
+    if (!editItem.name.trim()) { toast('Enter an item name'); return; }
+    if (!editItem.category_id) { toast('Select a category'); return; }
+    try {
+      const updated = await api.updateItem(editItem.id, {
+        name:        editItem.name.trim(),
+        qty:         editItem.qty,
+        status:      editItem.status,
+        category_id: editItem.category_id,
+      });
+      // Item may have moved to a different category — rebuild the list.
+      setCategories(cats => cats.map(cat => ({
+        ...cat,
+        items: cat.id === updated.category_id
+          // Add to new category list if not already there, replace if existing.
+          ? (cat.items.some(it => it.id === updated.id)
+              ? cat.items.map(it => it.id === updated.id ? updated : it)
+              : [...cat.items, updated])
+          // Remove from any other category.
+          : cat.items.filter(it => it.id !== updated.id),
+      })));
+      setEditItem(null);
+      toast('Item updated');
     } catch (e) { toast('Error: ' + e.message); }
   }
 
@@ -107,12 +144,26 @@ export default function PantryScreen({ categories, setCategories, toast }) {
     } catch (e) { toast('Error: ' + e.message); }
   }
 
+  // ── Edit category (rename) ────────────────────────────────
+  async function submitEditCat() {
+    if (!editCat.name.trim()) { toast('Enter a category name'); return; }
+    try {
+      const updated = await api.updateCategory(editCat.id, { name: editCat.name.trim() });
+      setCategories(cats => cats.map(c => c.id === updated.id ? { ...c, ...updated } : c));
+      setEditCat(null);
+      toast('Category renamed');
+    } catch (e) { toast('Error: ' + e.message); }
+  }
+
   // ── Delete category ───────────────────────────────────────
   async function deleteCategory(catId) {
-    if (!window.confirm('Delete this category and all its items?')) return;
+    if (!window.confirm('Delete this category and all its items?\n\nItems used by recipes will move to "Uncategorized".')) return;
     try {
       await api.deleteCategory(catId);
-      setCategories(cats => cats.filter(c => c.id !== catId));
+      // Refresh the whole list since recipe-linked goods may have been
+      // reassigned to 'Uncategorized' instead of being deleted.
+      const fresh = await api.getCategories();
+      setCategories(fresh);
       toast('Category removed');
     } catch (e) { toast('Error: ' + e.message); }
   }
@@ -126,7 +177,7 @@ export default function PantryScreen({ categories, setCategories, toast }) {
       {/* Stats bar */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
         {[
-          { label: 'In stock',   value: haveItems, color: 'var(--forest)' },
+          { label: 'In stock',    value: haveItems, color: 'var(--forest)' },
           { label: 'Need to buy', value: needItems, color: 'var(--rust)' },
           { label: 'Total items', value: totalItems, color: 'var(--ink-soft)' },
         ].map(s => (
@@ -150,7 +201,7 @@ export default function PantryScreen({ categories, setCategories, toast }) {
         const haveC = cat.items.filter(i => i.status === 'have').length;
         return (
           <div key={cat.id} className="card" style={{ marginBottom: 10 }}>
-            {/* Category header */}
+            {/* Category header — chevron toggles collapse, name opens rename */}
             <div
               onClick={() => setCollapsed(c => ({ ...c, [cat.id]: !c[cat.id] }))}
               style={{
@@ -161,7 +212,19 @@ export default function PantryScreen({ categories, setCategories, toast }) {
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--forest-mid)' }}>{cat.name}</span>
+                <span
+                  onClick={e => { e.stopPropagation(); setEditCat({ id: cat.id, name: cat.name }); }}
+                  style={{
+                    fontSize: 16, fontWeight: 700, color: '#000',
+                    cursor: 'text', textDecoration: 'underline',
+                    textDecorationColor: 'transparent', textUnderlineOffset: 3,
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.textDecorationColor = 'var(--sage)'}
+                  onMouseLeave={e => e.currentTarget.style.textDecorationColor = 'transparent'}
+                  title="Tap to rename"
+                >
+                  {cat.name}
+                </span>
                 <span style={{ fontSize: 11, color: 'var(--ink-faint)' }}>{haveC}/{cat.items.length}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -190,10 +253,19 @@ export default function PantryScreen({ categories, setCategories, toast }) {
                       transition: 'opacity 0.1s',
                     }}
                   >
-                    <div style={{ cursor: 'pointer' }} onClick={() => cycleStatus(cat.id, item.id, item.status)}>
+                    <div style={{ cursor: 'pointer' }} onClick={() => toggleStatus(cat.id, item.id, item.status)}>
                       <ToggleDot status={item.status} />
                     </div>
-                    <span style={{ flex: 1, fontSize: 14, color: 'var(--ink)' }}>{item.name}</span>
+                    {/* Tap on name → edit modal */}
+                    <span
+                      style={{ flex: 1, fontSize: 14, color: 'var(--ink)', cursor: 'pointer' }}
+                      onClick={() => setEditItem({
+                        id: item.id, name: item.name, qty: item.qty || '',
+                        status: item.status, category_id: item.category_id,
+                      })}
+                    >
+                      {item.name}
+                    </span>
                     {item.qty && (
                       <span style={{ fontSize: 12, color: 'var(--ink-faint)', marginRight: 4 }}>{item.qty}</span>
                     )}
@@ -243,7 +315,7 @@ export default function PantryScreen({ categories, setCategories, toast }) {
       </button>
 
       {/* FAB */}
-      <button className="fab" onClick={() => { setNewItem({ name: '', qty: '', status: 'have', category_id: categories[0]?.id || '' }); setAddItemOpen(true); }}>
+      <button className="fab" onClick={() => { setNewItem({ name: '', qty: '', status: 'need', category_id: categories[0]?.id || '' }); setAddItemOpen(true); }}>
         +
       </button>
 
@@ -266,14 +338,13 @@ export default function PantryScreen({ categories, setCategories, toast }) {
           <div className="form-group">
             <label className="form-label">Status</label>
             <select className="form-input" value={newItem.status} onChange={e => setNewItem(n => ({ ...n, status: e.target.value }))}>
-              <option value="have">Have ✓</option>
               <option value="need">Need ✕</option>
-              <option value="unchecked">To check</option>
+              <option value="have">Have ✓</option>
             </select>
           </div>
         </div>
         <div className="form-group">
-          <label className="form-label">Category</label>
+          <label className="form-label">Category <span style={{ color: 'var(--rust)' }}>*</span></label>
           <select className="form-input" value={newItem.category_id} onChange={e => setNewItem(n => ({ ...n, category_id: e.target.value }))}>
             <option value="">Select category...</option>
             {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -281,6 +352,45 @@ export default function PantryScreen({ categories, setCategories, toast }) {
         </div>
         <button className="btn btn-primary btn-full" style={{ marginTop: 4 }} onClick={submitAddItem}>Add to pantry</button>
         <button className="btn btn-secondary btn-full" style={{ marginTop: 8 }} onClick={() => setAddItemOpen(false)}>Cancel</button>
+      </Modal>
+
+      {/* Edit Item Modal */}
+      <Modal open={!!editItem} onClose={() => setEditItem(null)} title="Edit item">
+        {editItem && (
+          <>
+            <div className="form-group">
+              <label className="form-label">Item name</label>
+              <input className="form-input" autoFocus
+                value={editItem.name} onChange={e => setEditItem(n => ({ ...n, name: e.target.value }))}
+                onKeyDown={e => e.key === 'Enter' && submitEditItem()}
+              />
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Quantity</label>
+                <input className="form-input" placeholder="e.g. 500g, 2 pcs"
+                  value={editItem.qty} onChange={e => setEditItem(n => ({ ...n, qty: e.target.value }))}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Status</label>
+                <select className="form-input" value={editItem.status} onChange={e => setEditItem(n => ({ ...n, status: e.target.value }))}>
+                  <option value="need">Need ✕</option>
+                  <option value="have">Have ✓</option>
+                </select>
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Category <span style={{ color: 'var(--rust)' }}>*</span></label>
+              <select className="form-input" value={editItem.category_id || ''} onChange={e => setEditItem(n => ({ ...n, category_id: e.target.value }))}>
+                <option value="">Select category...</option>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <button className="btn btn-primary btn-full" style={{ marginTop: 4 }} onClick={submitEditItem}>Save changes</button>
+            <button className="btn btn-secondary btn-full" style={{ marginTop: 8 }} onClick={() => setEditItem(null)}>Cancel</button>
+          </>
+        )}
       </Modal>
 
       {/* Add Category Modal */}
@@ -294,6 +404,23 @@ export default function PantryScreen({ categories, setCategories, toast }) {
         </div>
         <button className="btn btn-primary btn-full" onClick={submitAddCat}>Add category</button>
         <button className="btn btn-secondary btn-full" style={{ marginTop: 8 }} onClick={() => setAddCatOpen(false)}>Cancel</button>
+      </Modal>
+
+      {/* Edit Category Modal */}
+      <Modal open={!!editCat} onClose={() => setEditCat(null)} title="Rename category">
+        {editCat && (
+          <>
+            <div className="form-group">
+              <label className="form-label">Category name</label>
+              <input className="form-input" autoFocus
+                value={editCat.name} onChange={e => setEditCat(n => ({ ...n, name: e.target.value }))}
+                onKeyDown={e => e.key === 'Enter' && submitEditCat()}
+              />
+            </div>
+            <button className="btn btn-primary btn-full" onClick={submitEditCat}>Save</button>
+            <button className="btn btn-secondary btn-full" style={{ marginTop: 8 }} onClick={() => setEditCat(null)}>Cancel</button>
+          </>
+        )}
       </Modal>
     </div>
   );

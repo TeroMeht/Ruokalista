@@ -50,13 +50,13 @@ async function seed() {
       ['Garlic',          'Vegetables',     '1 head',  true,  'have'],
       ['Tomatoes',        'Vegetables',     '500 g',   true,  'need'],
       ['Carrots',         'Vegetables',     '3 pcs',   true,  'have'],
-      ['Bell peppers',    'Vegetables',     '2 pcs',   true,  'unchecked'],
+      ['Bell peppers',    'Vegetables',     '2 pcs',   true,  'need'],
       ['Broccoli',        'Vegetables',     '300 g',   true,  'need'],
 
       // Meat & fish
       ['Chicken breast',  'Meat & Fish',    '600 g',   true,  'have'],
       ['Ground beef',     'Meat & Fish',    '400 g',   true,  'need'],
-      ['Salmon fillet',   'Meat & Fish',    '400 g',   true,  'unchecked'],
+      ['Salmon fillet',   'Meat & Fish',    '400 g',   true,  'need'],
 
       // Pantry staples
       ['Pasta',           'Pantry Staples', '2 × 500 g', true, 'have'],
@@ -67,12 +67,14 @@ async function seed() {
       ['Flour',           'Pantry Staples', '1 kg',    true,  'have'],
 
       // Fruit
-      ['Lemon',           'Fruit',          '2 pcs',   true,  'unchecked'],
+      ['Lemon',           'Fruit',          '2 pcs',   true,  'need'],
 
-      // One-off recipe ingredients (is_common = false) — don't show on pantry screen
-      ['Fresh dill',      'Herbs & Spices', '',        false, 'unchecked'],
-      ['Black pepper',    'Herbs & Spices', '',        false, 'unchecked'],
-      ['Salt',            'Herbs & Spices', '',        false, 'unchecked'],
+      // One-off recipe ingredients (is_common = false) — don't show on pantry
+      // screen but still need a category so they group cleanly on the
+      // shopping list when a recipe needs them.
+      ['Fresh dill',      'Herbs & Spices', '',        false, 'need'],
+      ['Black pepper',    'Herbs & Spices', '',        false, 'have'],
+      ['Salt',            'Herbs & Spices', '',        false, 'have'],
     ];
 
     const goodIds = {};
@@ -98,7 +100,9 @@ async function seed() {
       const recipeId = rows[0].id;
       for (let i = 0; i < ingredients.length; i++) {
         // ingredients entry: [goodName, qty]  OR  [goodName, qty, status]
-        const [goodName, qty, status = 'unchecked'] = ingredients[i];
+        // Default status is 'need' — assume the user hasn't shopped for the
+        // recipe yet until they explicitly toggle it 'have'.
+        const [goodName, qty, status = 'need'] = ingredients[i];
         const goodId = goodIds[goodName];
         if (!goodId) throw new Error(`seed: unknown good "${goodName}"`);
         await client.query(
@@ -122,7 +126,7 @@ async function seed() {
         ['Garlic',          '3 cloves',   'have'],
         ['Olive oil',       '3 tbsp',     'need'],
         ['Salt',            'to taste',   'have'],
-        ['Black pepper',    'to taste',   'unchecked'],
+        ['Black pepper',    'to taste',   'have'],
       ],
     });
 

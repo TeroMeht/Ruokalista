@@ -40,16 +40,25 @@ router.get('/', async (req, res) => {
   }
 });
 
+const VALID_STATUS = new Set(['have', 'need']);
+function badStatus(s) {
+  return s !== undefined && !VALID_STATUS.has(s);
+}
+
 router.post('/', async (req, res) => {
   const {
     name,
-    category_id = null,
+    category_id,
     qty = '',
     is_common = true,
-    status = 'unchecked',
+    status = 'need',
     notes = '',
   } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'name required' });
+  if (!category_id) return res.status(400).json({ error: 'category_id required' });
+  if (badStatus(status)) {
+    return res.status(400).json({ error: "status must be 'have' or 'need'" });
+  }
   try {
     const { rows } = await db.query(
       `INSERT INTO goods (name, category_id, qty, is_common, status, notes, sort_order)
@@ -69,6 +78,12 @@ router.post('/', async (req, res) => {
 
 router.patch('/:id', async (req, res) => {
   const { name, category_id, qty, is_common, status, notes } = req.body;
+  if (badStatus(status)) {
+    return res.status(400).json({ error: "status must be 'have' or 'need'" });
+  }
+  if (category_id === null) {
+    return res.status(400).json({ error: 'category_id is required' });
+  }
   try {
     const fields = [];
     const vals = [];

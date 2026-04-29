@@ -9,11 +9,21 @@ import { api } from '../lib/api.js';
  * and/or one or more recipes whose ingredients were flagged 'need'), but we
  * lead with the item itself — at the store the reason doesn't matter, only
  * what to grab.
+ *
+ * Behaviour:
+ *   • Checking an item persists status='have' on the server for every source
+ *     of that item — pantry good and/or each recipe ingredient that put it
+ *     here. The item then drops into a dimmed "Done" section at the bottom,
+ *     where it can still be unchecked (which flips the same sources back to
+ *     'need').
+ *   • Refreshing the list (or reloading the app) refetches from the server,
+ *     at which point items still flagged 'have' simply don't reappear.
  */
 
 export default function ShopScreen({ categories, recipes, toast }) {
   const [shopData, setShopData] = useState(null);
-  const [checked, setChecked]   = useState({});
+  const [done, setDone]         = useState({});  // { good_id: true }
+  const [busy, setBusy]         = useState({});  // { good_id: true } while a network call is in flight
   const [loading, setLoading]   = useState(true);
 
   const load = useCallback(async () => {
@@ -21,20 +31,24 @@ export default function ShopScreen({ categories, recipes, toast }) {
     try {
       const data = await api.getShopping();
       setShopData(data);
+      setDone({});  // Fresh list — clear local "done" memory.
     } catch (e) { toast('Error loading shopping list: ' + e.message); }
     setLoading(false);
   }, [toast]);
 
   // Reload when pantry or recipes state changes (e.g. user flipped an
-  // ingredient's have/need status on the Recipes tab).
+  // ingredient's have/need status on another tab).
   useEffect(() => { load(); }, [categories, recipes, load]);
 
   const items = shopData?.items || [];
 
-  // Group by category, preserving server-side ordering.
+  // Split by done state, then group the active items by category.
+  const activeItems = items.filter(i => !done[i.good_id]);
+  const doneItems   = items.filter(i =>  done[i.good_id]);
+
   const byCategory = [];
   const catIndex = new Map();
-  for (const item of items) {
+  for (const item of activeItems) {
     const key = item.category_id || '__none__';
     if (!catIndex.has(key)) {
       catIndex.set(key, byCategory.length);
@@ -48,15 +62,49 @@ export default function ShopScreen({ categories, recipes, toast }) {
   }
 
   const total     = items.length;
-  const doneCount = items.filter(i => checked[i.good_id]).length;
+  const doneCount = doneItems.length;
   const remaining = total - doneCount;
   const pct       = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
-  function toggle(id) {
-    setChecked(c => ({ ...c, [id]: !c[id] }));
+  // Persist the new status on every source of this item (pantry and/or each
+  // recipe ingredient). We collect promises and await them in parallel.
+  async function pushStatus(item, status) {
+    const calls = [];
+    for (const src of item.sources) {
+      if (src.kind === 'pantry') {
+        calls.push(api.updateItem(item.good_id, { status }));
+      } else if (src.kind === 'recipe' && src.ingredient_id) {
+        calls.push(api.patchIngredient(src.recipe_id, src.ingredient_id, { status }));
+      }
+    }
+    await Promise.all(calls);
   }
+
+  async function toggle(item) {
+    const id = item.good_id;
+    if (busy[id]) return;
+    const wasDone = !!done[id];
+    // Optimistic flip.
+    setDone(d => ({ ...d, [id]: !wasDone }));
+    setBusy(b => ({ ...b, [id]: true }));
+    try {
+      await pushStatus(item, wasDone ? 'need' : 'have');
+    } catch (e) {
+      // Rollback on error.
+      setDone(d => ({ ...d, [id]: wasDone }));
+      toast('Error: ' + e.message);
+    } finally {
+      setBusy(b => {
+        const { [id]: _, ...rest } = b;
+        return rest;
+      });
+    }
+  }
+
   function clearDone() {
-    setChecked({});
+    // Just forget the local "done" entries — they're already persisted on
+    // the server, so a manual refresh will drop them from the list naturally.
+    setDone({});
     toast('Cleared ✓');
   }
 
@@ -102,27 +150,49 @@ export default function ShopScreen({ categories, recipes, toast }) {
           </div>
         </div>
       ) : (
-        byCategory.map(group => (
-          <div key={group.id || '__none__'}>
-            <div className="section-label">{group.name}</div>
-            <div className="card">
-              {group.items.map(item => (
-                <ShopItem
-                  key={item.good_id}
-                  item={item}
-                  done={!!checked[item.good_id]}
-                  onToggle={() => toggle(item.good_id)}
-                />
-              ))}
+        <>
+          {byCategory.map(group => (
+            <div key={group.id || '__none__'}>
+              <div className="section-label">{group.name}</div>
+              <div className="card">
+                {group.items.map(item => (
+                  <ShopItem
+                    key={item.good_id}
+                    item={item}
+                    done={false}
+                    busy={!!busy[item.good_id]}
+                    onToggle={() => toggle(item)}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
-        ))
+          ))}
+
+          {doneItems.length > 0 && (
+            <div style={{ marginTop: 22, opacity: 0.6 }}>
+              <div className="section-label" style={{ color: 'var(--ink-faint)' }}>
+                Done ({doneItems.length})
+              </div>
+              <div className="card">
+                {doneItems.map(item => (
+                  <ShopItem
+                    key={item.good_id}
+                    item={item}
+                    done={true}
+                    busy={!!busy[item.good_id]}
+                    onToggle={() => toggle(item)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       <button
         onClick={load}
         style={{
-          width: '100%', marginTop: 8, marginBottom: 24,
+          width: '100%', marginTop: 14, marginBottom: 24,
           padding: 11, borderRadius: 'var(--r)',
           border: '1px solid var(--cream-dark)',
           background: 'white', color: 'var(--ink-mid)',
@@ -135,14 +205,14 @@ export default function ShopScreen({ categories, recipes, toast }) {
   );
 }
 
-function ShopItem({ item, done, onToggle }) {
-  const hasPantry  = item.sources.some(s => s.kind === 'pantry');
+function ShopItem({ item, done, busy, onToggle }) {
   const recipeSrcs = item.sources.filter(s => s.kind === 'recipe');
 
-  // Subtitle: qty · pantry hint · recipe emojis
+  // Subtitle: qty · recipe emojis. Pantry origin is intentionally not shown
+  // — at the store the source doesn't matter, and we group by category
+  // regardless of whether the item came from the pantry or a recipe.
   const parts = [];
   if (item.qty) parts.push(item.qty);
-  if (hasPantry) parts.push('pantry');
   if (recipeSrcs.length) {
     parts.push(
       recipeSrcs
@@ -154,11 +224,13 @@ function ShopItem({ item, done, onToggle }) {
 
   return (
     <div
-      onClick={onToggle}
+      onClick={busy ? undefined : onToggle}
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '10px 14px', borderBottom: '1px solid var(--cream-dark)',
-        cursor: 'pointer', transition: 'background 0.1s',
+        cursor: busy ? 'default' : 'pointer',
+        opacity: busy ? 0.5 : 1,
+        transition: 'opacity 0.1s, background 0.1s',
       }}
     >
       {/* Checkbox */}

@@ -62,8 +62,15 @@ JWT_SECRET=generate_a_long_random_string_here
 
 ```bash
 cd server
-npm run db:migrate   # creates all tables
+npm run db:migrate   # creates all tables (fresh install — wipes data!)
 npm run db:seed      # loads sample data (optional)
+```
+
+If you already have a v2 database with data you want to preserve, run the
+in-place upgrade instead of `db:migrate`:
+
+```bash
+node src/db/migrate-v3.js   # adds 'Uncategorized' bucket, drops 'unchecked'
 ```
 
 ### 6. Start development servers
@@ -276,11 +283,15 @@ viikkoruoka/
 ```
 GET    /api/pantry/categories         — all categories + items
 POST   /api/pantry/categories         — create category { name }
+PATCH  /api/pantry/categories/:id     — rename category { name }
 DELETE /api/pantry/categories/:id     — delete category + its items
+                                         (recipe-linked items move to "Uncategorized")
 
-POST   /api/pantry/items              — add item { category_id, name, qty, status }
-PATCH  /api/pantry/items/:id          — update { status?, name?, qty? }
+POST   /api/pantry/items              — add item { category_id*, name, qty, status }   *required
+PATCH  /api/pantry/items/:id          — update { status?, name?, qty?, category_id? }
 DELETE /api/pantry/items/:id          — remove item
+
+   status is 'have' or 'need'. Every item must belong to a category.
 
 GET    /api/recipes                   — all recipes + ingredients
 POST   /api/recipes                   — create recipe

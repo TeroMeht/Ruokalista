@@ -31,6 +31,7 @@ router.get('/', async (req, res) => {
              NULL::uuid   AS recipe_id,
              NULL::text   AS recipe_name,
              NULL::text   AS recipe_emoji,
+             NULL::uuid   AS ingredient_id,
              NULL::text   AS recipe_qty
         FROM goods g
         LEFT JOIN pantry_categories c ON c.id = g.category_id
@@ -51,6 +52,7 @@ router.get('/', async (req, res) => {
              r.id          AS recipe_id,
              r.name        AS recipe_name,
              r.emoji       AS recipe_emoji,
+             ri.id         AS ingredient_id,
              ri.qty        AS recipe_qty
         FROM recipe_ingredients ri
         JOIN recipes r ON r.id = ri.recipe_id
@@ -80,11 +82,12 @@ router.get('/', async (req, res) => {
         entry.sources.push({ kind: 'pantry' });
       } else {
         entry.sources.push({
-          kind:        'recipe',
-          recipe_id:   r.recipe_id,
-          recipe_name: r.recipe_name,
-          emoji:       r.recipe_emoji,
-          qty:         r.recipe_qty,
+          kind:          'recipe',
+          recipe_id:     r.recipe_id,
+          recipe_name:   r.recipe_name,
+          emoji:         r.recipe_emoji,
+          ingredient_id: r.ingredient_id,
+          qty:           r.recipe_qty,
         });
         // Prefer the recipe's qty over the (often blank) good-level qty.
         if (!entry.qty && r.recipe_qty) entry.qty = r.recipe_qty;
