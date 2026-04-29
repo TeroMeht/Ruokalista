@@ -54,7 +54,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--forest)' }}>
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--forest)' }}>
         <div style={{ fontFamily: "'DM Serif Display', serif", fontSize: 28, color: 'var(--mint)', marginBottom: 16 }}>Viikkoruoka</div>
         <div style={{ width: 32, height: 32, border: '2.5px solid rgba(184,221,200,0.3)', borderTopColor: 'var(--mint)', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -64,7 +64,7 @@ export default function App() {
 
   if (error) {
     return (
-      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'var(--forest)', color: 'var(--mint)', textAlign: 'center' }}>
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'var(--forest)', color: 'var(--mint)', textAlign: 'center' }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>⚠️</div>
         <div style={{ fontFamily: "'DM Serif Display', serif", fontSize: 22, marginBottom: 8 }}>Cannot connect to server</div>
         <div style={{ fontSize: 13, color: 'var(--sage)', marginBottom: 24, lineHeight: 1.6 }}>
@@ -86,7 +86,11 @@ export default function App() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+    // height:100% (not 100vh) so the bottom TabBar stays within the visible
+    // viewport on Android Chrome — 100vh on Android = viewport with URL bar
+    // hidden, which pushes the bar below the visible area when the URL bar is
+    // showing.
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <Header categories={categories} onSignOut={handleSignOut} />
 
       {/* Screens - all mounted, only active one is visible */}
